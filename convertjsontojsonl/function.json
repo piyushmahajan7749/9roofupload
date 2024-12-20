@@ -1,0 +1,13 @@
+{
+    "bindings": [
+      {
+        "type": "blobTrigger",
+        "direction": "in",
+        "name": "myblob",
+        "path": "chatfiles/{name}",
+        "connection": "batchprocessblob_STORAGE"
+      }
+    ],
+    "scriptFile": "__init__.py"
+  }
+  
