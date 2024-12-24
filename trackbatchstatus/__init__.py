@@ -19,17 +19,18 @@ def main(timer):
             api_version="2024-10-21"
         )
 
-        # Access uploadtoopenai-response and batchjob-results containers
+        # Access Azure Blob Storage containers
         response_container = "uploadtoopenai-response"
         result_container = "batchjob-results"
+        finalized_container = "finalized-batches"
         connection_string = os.getenv("batchprocessblob_STORAGE")
         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
         response_container_client = blob_service_client.get_container_client(response_container)
         result_container_client = blob_service_client.get_container_client(result_container)
+        finalized_container_client = blob_service_client.get_container_client(finalized_container)
 
         # Iterate over all batch response files
         for blob in response_container_client.list_blobs():
-            # Extract the blob name
             blob_client = response_container_client.get_blob_client(blob.name)
             response_content = blob_client.download_blob().readall()
             response_data = json.loads(response_content)
@@ -40,38 +41,43 @@ def main(timer):
                 logging.warning(f"No valid batch ID found in blob: {blob.name}")
                 continue
 
-            logging.info(f"Checking status for Batch ID: {batch_id}")
-            status = response_data.get("status", "validating")
-
-            # Poll for status updates
-            while status not in ("completed", "failed", "canceled"):
-                time.sleep(60)  # Wait 60 seconds
+            # Fetch the latest status from Azure OpenAI
+            try:
                 batch_response = client.batches.retrieve(batch_id)
                 status = batch_response.status
-                logging.info(f"{datetime.datetime.now()} Batch ID: {batch_id}, Status: {status}")
+                file_id = batch_response.input_file_id
+                file_info = client.files.retrieve(file_id)
+                logging.info(file_info.model_dump_json(indent=2))
+                logging.info(f"Batch Details: {batch_response.model_dump_json(indent=2)}")
+                logging.info(f"Batch ID: {batch_id}, Updated Status: {status}")
 
-                # Update the status in the response file
+                # Update the response file with the latest status
                 response_data["status"] = status
                 blob_client.upload_blob(json.dumps(response_data, indent=4), overwrite=True)
 
-            # Handle final statuses
-            if status == "completed":
-                logging.info(f"Batch {batch_id} completed. Retrieving output file...")
-                save_batch_file(client, batch_response.output_file_id, result_container_client, batch_id, "output")
-            elif status == "failed":
-                logging.error(f"Batch {batch_id} failed. Dumping detailed response...")
-                if hasattr(batch_response, "errors") and batch_response.errors:
-                    for error in batch_response.errors.data:
-                        logging.error(f"Error code: {error.code}, Message: {error.message}")
+                # Save the batch output or error files if finalized
+                if status == "completed":
+                    logging.info(f"Batch {batch_id} is completed. Saving output files...")
+                    save_batch_file(client, batch_response.output_file_id, result_container_client, batch_id, "output")
+                elif status == "failed":
+                    logging.info(f"Batch {batch_id} failed. Saving error files...")
+                    save_batch_file(client, batch_response.error_file_id, result_container_client, batch_id, "error")
 
-                error_file_id = batch_response.error_file_id
-                if error_file_id:
-                    save_batch_file(client, error_file_id, result_container_client, batch_id, "error")
+                # Move finalized files to the finalized-batches container
+                if status in ("completed", "failed", "canceled"):
+                    logging.info(f"Batch {batch_id} has reached a finalized state with status: {status}.")
+                    logging.info(f"Initiating move of blob '{blob.name}' to the finalized-batches container in the '{status}' folder...")
+                    move_to_finalized(blob_client, finalized_container_client, blob.name, status)
+                    logging.info(f"Blob '{blob.name}' successfully moved to finalized-batches/{status}.")
                 else:
-                    logging.warning(f"No error file available for Batch ID: {batch_id}.")
+                    logging.info(f"Batch {batch_id} is still in progress with status: {status}. Retrying in next execution.")
+
+            except Exception as e:
+                logging.error(f"Error fetching status for Batch ID {batch_id}: {str(e)}")
 
     except Exception as e:
         logging.error(f"An error occurred while tracking batch jobs: {str(e)}")
+
 
 
 def save_batch_file(client, file_id, container_client, batch_id, file_type):
@@ -97,18 +103,6 @@ def save_batch_file(client, file_id, container_client, batch_id, file_type):
         jsonl_blob_client.upload_blob(raw_responses, overwrite=True)
         logging.info(f".jsonl file saved successfully for Batch ID: {batch_id}")
 
-        # Convert the .jsonl content to .json
-        logging.info(f"Converting {file_type} .jsonl to .json for Batch ID: {batch_id}...")
-        json_content = convert_to_json(raw_responses)
-
-        # Save the .json file
-        json_blob_name = f"{batch_id}-{file_type}.json"
-        json_blob_client = container_client.get_blob_client(blob=json_blob_name)
-
-        logging.info(f"Saving {file_type} .json responses to {json_blob_name}...")
-        json_blob_client.upload_blob(json_content, overwrite=True)
-        logging.info(f".json file saved successfully for Batch ID: {batch_id}")
-
     except Exception as e:
         logging.error(f"An error occurred while saving {file_type} file for Batch ID: {batch_id}: {str(e)}")
 
@@ -133,3 +127,29 @@ def convert_to_json(jsonl_content):
         logging.error(f"Error converting JSONL to JSON: {str(e)}")
         raise
 
+def move_to_finalized(blob_client, finalized_container_client, blob_name, status):
+    """
+    Moves a blob to the finalized-batches container into the appropriate folder based on its status.
+    """
+    try:
+        folder_map = {
+            "completed": "completed",
+            "failed": "failed",
+            "canceled": "canceled"
+        }
+        folder_name = folder_map.get(status, "others")
+        finalized_blob_name = f"{folder_name}/{os.path.basename(blob_name)}"
+
+        logging.info(f"Moving blob {blob_name} to finalized-batches/{folder_name}...")
+        finalized_blob_client = finalized_container_client.get_blob_client(finalized_blob_name)
+
+        # Download content from the source blob and upload to the finalized container
+        blob_content = blob_client.download_blob().readall()
+        finalized_blob_client.upload_blob(blob_content, overwrite=True)
+
+        # Delete the source blob
+        blob_client.delete_blob()
+        logging.info(f"Blob {blob_name} successfully moved to finalized-batches/{folder_name}.")
+
+    except Exception as e:
+        logging.error(f"An error occurred while moving blob {blob_name} to finalized-batches: {str(e)}")

@@ -48,9 +48,117 @@ def main(myblob):
         except json.JSONDecodeError as e:
             logging.error(f"Invalid JSON format in blob '{blob_name}': {e}")
             return
+        
+
 
         # Transform JSON content into JSONL format
         try:
+            
+            prompt = f"""
+            Extract property listing information from this chat message:
+            If a field is not available, leave it blank.
+            Represents a property listing  with an organization.
+            This model captures basic information about a property listing, including the requirement, property type, location, price range, property subtype, additional features, date, name, and contact.
+
+            requirement: "Type of requirement: Rent, Sale, Ratio Deal"
+            area: "Area in square feet"
+            location: "Location of the property"
+            price "Price of the property in rupees"
+            property_subtype: "Subtype of property based on category:         
+            Commercial: Office, Shop, Showroom, School, College, Hospital
+            Land: Agricultural land, Commercial land, Industrial land, Residential Plot, Commercial Plot
+            Industrial: Factory, Warehouse, Godown
+            Hospitality: Hotel, Resort, Farmhouse
+            Residential: Hostel, 1bhk Flat, 2bhk flat, 3bhk flat, 4bhk flat, 5bhk flat, 1RK Flat, Studio Apartment, 1bhk house, 2bhk house, 3bhk house, 4bhk house, 5bhk house"
+            description: short and concise to the point description of the property. e.g. 2 BHK flat available for sale in Vijay nagar, Indore
+            listingDate: str = None
+            category: Optional[str] = None
+            listing_type: Optional[str] = None
+            geolocation: Optional[str] = None
+            rating: float = 5.0
+            ratings_history: List[Any] = []
+            name: Optional[str] = None
+            contact_number: Optional[str] = None
+            isOwnerListing: Optional[bool] = False
+            """
+
+                    # Step 1: Prepare the response format
+            response_format = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "property_listing_schema",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "requirement": {
+                                    "type": ["string", "null"],
+                                    "description": "Type of requirement: Rent, Sale, Ratio Deal"
+                                },
+                                "area": {
+                                    "oneOf": [
+                                        {"type": "number"},
+                                        {"type": "string"}
+                                    ],
+                                    "description": "Area in square feet"
+                                },
+                                "location": {
+                                    "type": ["string", "null"],
+                                    "description": "Location of the property"
+                                },
+                                "price": {
+                                    "oneOf": [
+                                        {"type": "number"},
+                                        {"type": "string"}
+                                    ],
+                                    "description": "Price of the property in rupees"
+                                },
+                                "property_subtype": {
+                                    "type": ["string", "null"],
+                                    "description": "Subtype of the property based on category"
+                                },
+                                "description": {
+                                    "type": ["string", "null"],
+                                    "description": "Short, concise description of the property"
+                                },
+                                "listingDate": {
+                                    "type": ["string", "null"]
+                                },
+                                "category": {
+                                    "type": ["string", "null"]
+                                },
+                                "listing_type": {
+                                    "type": ["string", "null"]
+                                },
+                                "geolocation": {
+                                    "type": ["string", "null"]
+                                },
+                                "rating": {
+                                    "type": "number",
+                                    "description": "Current rating of the property",
+                                    "default": 5.0
+                                },
+                                "ratings_history": {
+                                    "type": "array",
+                                    "items": {}
+                                },
+                                "name": {
+                                    "type": ["string", "null"]
+                                },
+                                "contact_number": {
+                                    "type": ["string", "null"]
+                                },
+                                "isOwnerListing": {
+                                    "type": "boolean",
+                                    "default": False
+                                }
+                            },
+                            "required": [],
+                            "additionalProperties": False
+                        },
+                        "strict": True
+                    }
+            }
+
             transformed_lines = []
             for i, item in enumerate(json_data):
                 transformed_item = {
@@ -60,9 +168,10 @@ def main(myblob):
                     "body": {
                         "model": "gpt-4o",
                         "messages": [
-                            {"role": "system", "content": "You are an AI assistant that helps people find information."},
+                            {"role": "system", "content": prompt},
                             {"role": "user", "content": item.get("message", "")}
-                        ]
+                        ],
+                        "response_format": response_format
                     }
                 }
                 transformed_lines.append(json.dumps(transformed_item))

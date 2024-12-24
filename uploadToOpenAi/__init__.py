@@ -22,6 +22,7 @@ def main(myblob):
 
         # Read the blob content
         blob_content = myblob.read()
+        decoded_blob_content = blob_content.decode("utf-8")  # Decoding the content
         logging.info(f"Read content from blob '{blob_name}'.")
 
         # Initialize OpenAI client
@@ -31,12 +32,17 @@ def main(myblob):
             api_version="2024-10-21"
         )
 
-        # Step 1: Upload the JSONL file to Azure OpenAI
-        logging.info("Uploading the JSONL file to Azure OpenAI...")
-        filename = os.path.basename(blob_name)
-        jsonl_file = io.BytesIO(blob_content)
-        jsonl_file.name = filename  # Set filename for proper validation
+        # Step 1: Parse and prepare the JSONL content
+        lines = [json.loads(line) for line in decoded_blob_content.strip().split('\n')]
 
+        # Prepare the file for upload
+        updated_jsonl_content = "\n".join(json.dumps(line) for line in lines)
+        jsonl_file = io.BytesIO(updated_jsonl_content.encode("utf-8"))  # Encoding for upload
+        jsonl_file.name = os.path.basename(blob_name)
+
+
+        # Step 2: Upload the JSONL file to Azure OpenAI
+        logging.info("Uploading the JSONL file to Azure OpenAI...")
         file_response = client.files.create(
             file=jsonl_file,
             purpose="batch"
@@ -44,7 +50,7 @@ def main(myblob):
         file_id = file_response.id
         logging.info(f"File uploaded successfully to Azure OpenAI. File ID: {file_id}")
 
-        # Step 2: Poll for file status until 'Processed'
+        # Step 3: Poll for file status until 'Processed'
         logging.info("Polling file status until 'Processed'...")
         file_status = "pending"
         while file_status not in ["processed", "failed"]:
@@ -57,7 +63,7 @@ def main(myblob):
                 logging.error("File processing failed. Exiting.")
                 return
 
-        # Step 3: Submit a batch job
+        # Step 4: Submit a batch job
         logging.info("Submitting the batch job to Azure OpenAI...")
         batch_response = client.batches.create(
             input_file_id=file_id,
@@ -67,10 +73,10 @@ def main(myblob):
         batch_id = batch_response.id
         logging.info(f"Batch job submitted successfully. Batch ID: {batch_id}")
 
-        # Step 4: Save full batch response to uploadtoopenai-response container
+        # Step 5: Save full batch response to uploadtoopenai-response container
         logging.info("Saving batch response to uploadtoopenai-response container...")
         container_name = "uploadtoopenai-response"
-        response_blob_name = f"{filename.replace('.jsonl', '')}-response.json"
+        response_blob_name = f"{os.path.basename(blob_name).replace('.jsonl', '')}-response.json"
         connection_string = os.getenv("batchprocessblob_STORAGE")
         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
         response_blob_client = blob_service_client.get_blob_client(container=container_name, blob=response_blob_name)
