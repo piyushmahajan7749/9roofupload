@@ -2,6 +2,7 @@ import logging
 from azure.storage.blob import BlobServiceClient
 import json
 import os
+import re
 
 def main(myblob):
     """
@@ -57,9 +58,13 @@ def main(myblob):
             prompt = f"""
             Extract property listing information from this chat message:
             If a field is not available, leave it blank.
+            If any of the value is not available that we need to give in the response format then leave it blank.
+            If message does not contain the url then leave the url in the response format blank.
             Represents a property listing  with an organization.
             This model captures basic information about a property listing, including the requirement, property type, location, price range, property subtype, additional features, date, name, and contact.
 
+            name : "display_name"
+            contact_number = "phone"
             requirement: "Type of requirement: Rent, Sale, Ratio Deal"
             area: "Area in square feet"
             location: "Location of the property"
@@ -82,85 +87,23 @@ def main(myblob):
             isOwnerListing: Optional[bool] = False
             """
 
-                    # Step 1: Prepare the response format
-            response_format = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "property_listing_schema",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "requirement": {
-                                    "type": ["string", "null"],
-                                    "description": "Type of requirement: Rent, Sale, Ratio Deal"
-                                },
-                                "area": {
-                                    "oneOf": [
-                                        {"type": "number"},
-                                        {"type": "string"}
-                                    ],
-                                    "description": "Area in square feet"
-                                },
-                                "location": {
-                                    "type": ["string", "null"],
-                                    "description": "Location of the property"
-                                },
-                                "price": {
-                                    "oneOf": [
-                                        {"type": "number"},
-                                        {"type": "string"}
-                                    ],
-                                    "description": "Price of the property in rupees"
-                                },
-                                "property_subtype": {
-                                    "type": ["string", "null"],
-                                    "description": "Subtype of the property based on category"
-                                },
-                                "description": {
-                                    "type": ["string", "null"],
-                                    "description": "Short, concise description of the property"
-                                },
-                                "listingDate": {
-                                    "type": ["string", "null"]
-                                },
-                                "category": {
-                                    "type": ["string", "null"]
-                                },
-                                "listing_type": {
-                                    "type": ["string", "null"]
-                                },
-                                "geolocation": {
-                                    "type": ["string", "null"]
-                                },
-                                "rating": {
-                                    "type": "number",
-                                    "description": "Current rating of the property",
-                                    "default": 5.0
-                                },
-                                "ratings_history": {
-                                    "type": "array",
-                                    "items": {}
-                                },
-                                "name": {
-                                    "type": ["string", "null"]
-                                },
-                                "contact_number": {
-                                    "type": ["string", "null"]
-                                },
-                                "isOwnerListing": {
-                                    "type": "boolean",
-                                    "default": False
-                                }
-                            },
-                            "required": [],
-                            "additionalProperties": False
-                        },
-                        "strict": True
-                    }
-            }
+            response_format = {"type": "json_schema", "json_schema": {"name": "property_listing_schema", "schema": {"type": "object", "properties": {"requirement": {"type": "string"}, "description": {"type": "string"}, "area": {"type": "string"}, "location": {"type": "string"}, "price": {"type": "string"},"name": {"type": "string"},"contact_number": {"type": "string"}, "url": {"type": "string"}}, "required": ["requirement", "description", "area", "location", "price", "name", "contact_number", "url"], "additionalProperties": False}, "strict": True}}
 
             transformed_lines = []
+            url_pattern = r"https?://[^\s]+"
+
             for i, item in enumerate(json_data):
+                message = item.get("message", "")
+                display_name = item.get("displayName", "")
+                phone = item.get("phone", "")
+                
+                # Extract URL if present
+                url_match = re.search(url_pattern, message)
+                url = url_match.group(0) if url_match else ""
+                
+                # Combine fields into user content
+                user_content = f"Message: {message}\nDisplay Name: {display_name}\nPhone: {phone}\nURL: {url}"
+                
                 transformed_item = {
                     "custom_id": f"task-{i}",
                     "method": "POST",
@@ -169,7 +112,7 @@ def main(myblob):
                         "model": "gpt-4o",
                         "messages": [
                             {"role": "system", "content": prompt},
-                            {"role": "user", "content": item.get("message", "")}
+                            {"role": "user", "content": user_content}
                         ],
                         "response_format": response_format
                     }
