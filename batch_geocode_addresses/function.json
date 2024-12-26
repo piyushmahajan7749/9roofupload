@@ -1,0 +1,13 @@
+{
+    "bindings": [
+        {
+          "type": "blobTrigger",
+          "direction": "in",
+          "name": "myblob",
+          "path": "batchjob-results/{name}",
+          "connection": "batchprocessblob_STORAGE"
+        }
+      ],
+      "scriptFile": "__init__.py"
+  }
+  
